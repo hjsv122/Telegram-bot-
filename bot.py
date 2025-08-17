@@ -2,7 +2,7 @@ import time
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
-from config import BOT_TOKEN, BOT_NAME, ADSTERRA_LINK
+from config import BOT_TOKEN, BOT_NAME, ADSTERRA_LINK, WITHDRAW_FEE_PERCENT
 
 # --- قاعدة البيانات ---
 conn = sqlite3.connect('database.db', check_same_thread=False)
@@ -34,7 +34,8 @@ def main_menu():
         [InlineKeyboardButton("مشاهدة الإعلان/مهام", callback_data='watch')],
         [InlineKeyboardButton("استثمار", callback_data='invest')],
         [InlineKeyboardButton("استلام الأرباح", callback_data='collect')],
-        [InlineKeyboardButton("رصيدي الحالي", callback_data='balance')]
+        [InlineKeyboardButton("رصيدي الحالي", callback_data='balance')],
+        [InlineKeyboardButton("سحب الأرباح للمحفظة", callback_data='withdraw')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -46,15 +47,13 @@ def button_handler(update: Update, context: CallbackContext):
     balance, jumps = result if result else (0,0)
 
     if query.data == 'watch':
-        # إضافة رصيد من مشاهدة الإعلان/مهام
-        earned = 0.5  # مثال: كل مهمة 0.5$
+        earned = 0.5  # كل مهمة 0.5$
         c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (earned, user_id))
         conn.commit()
         query.answer(f"لقد ربحت ${earned} من المشاهدة!")
         query.edit_message_text("تمت إضافة الأرباح!", reply_markup=main_menu())
 
     elif query.data == 'invest':
-        # قائمة استثمارية
         invest_buttons = [
             [InlineKeyboardButton("1$ → 400 قفزة", callback_data='invest_1')],
             [InlineKeyboardButton("2$ → 600 قفزة", callback_data='invest_2')],
@@ -78,7 +77,7 @@ def button_handler(update: Update, context: CallbackContext):
             query.answer("رصيدك غير كافٍ للاستثمار.", show_alert=True)
 
     elif query.data == 'collect':
-        collected = jumps * 0.025  # قيمة كل قفزة بالدولار
+        collected = jumps * 0.025
         c.execute("UPDATE users SET balance = balance + ?, jumps = 0 WHERE user_id=?", (collected, user_id))
         conn.commit()
         query.answer(f"تم تحويل {collected}$ إلى رصيدك!")
@@ -87,13 +86,47 @@ def button_handler(update: Update, context: CallbackContext):
     elif query.data == 'balance':
         query.edit_message_text(f"رصيدك الحالي: ${balance}\nعدد القفزات: {jumps}", reply_markup=main_menu())
 
-    elif query.data == 'back':
-        query.edit_message_text("العودة إلى القائمة الرئيسية", reply_markup=main_menu())
+    elif query.data == 'withdraw':
+        query.edit_message_text(
+            f"لإتمام السحب، أرسل لي الرسالة بهذا الشكل:\n"
+            f"/send <المبلغ> <عنوان المحفظة>\n\n"
+            f"مثال: /send 5 Txxxxxx",
+            reply_markup=main_menu()
+        )
+
+def send(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    if len(context.args) != 2:
+        update.message.reply_text("استخدام خاطئ! مثال: /send 5 Txxxxxx")
+        return
+
+    amount = float(context.args[0])
+    wallet_address = context.args[1]
+
+    c.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    balance = c.fetchone()[0]
+
+    if amount > balance:
+        update.message.reply_text("رصيدك غير كافٍ.")
+        return
+
+    fee = amount * WITHDRAW_FEE_PERCENT / 100
+    final_amount = amount - fee
+    balance -= amount
+    c.execute("UPDATE users SET balance=? WHERE user_id=?", (balance, user_id))
+    conn.commit()
+
+    # هنا تضيف عملية إرسال الأموال فعليًا إلى المحفظة (API أو يدويًا)
+    update.message.reply_text(
+        f"تم خصم {fee}$ رسوم شبكة.\n"
+        f"تم إرسال {final_amount}$ إلى محفظتك {wallet_address}."
+    )
 
 # --- تشغيل البوت ---
 updater = Updater(BOT_TOKEN, use_context=True)
 dp = updater.dispatcher
 dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("send", send))
 dp.add_handler(CallbackQueryHandler(button_handler))
 
 print(f"{BOT_NAME} بدأ العمل!")
